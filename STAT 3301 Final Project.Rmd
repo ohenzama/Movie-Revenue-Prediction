@@ -1,0 +1,507 @@
+---
+title: "Appendix"
+subtitle: "STAT 3301"
+institute: "The Ohio State University"
+author: "Ohenmaa Sarfo-Bonsu"
+date: "2025-12-16"
+execute:
+  echo: true
+knitr:
+  opts_chunk:
+    message: false
+    warning: false
+format:
+  html:
+    toc: true
+embed-resources: true
+output: pdf_document
+---
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(lubridate)
+library(stringr)
+library(shiny)
+library(rlang)
+library(leaps)
+library(data.table)
+library(GGally)
+library(car)
+library(tibble)
+library(knitr)
+library(kableExtra)
+
+```
+
+```{r}
+# table of original variables 
+library(tibble)
+library(knitr)
+library(kableExtra)
+
+variable_table <- tibble(
+  `Factor name` = c(
+    "movie_title",
+    "production_date",
+    "genres",
+    "runtime_minutes",
+    "director_name",
+    "birth_year",
+    "movie_averageRating",
+    "budget",
+    "gross"
+  ),
+  Description = c(
+    "The name of the movie",
+    "The day, month, and year that the movie was produced",
+    "An alphabetical list of up to three genres that described the movie",
+    "Length of the movie in minutes",
+    "Name of the director",
+    "The year the director was born",
+    "A quality rating given to the movie by viewers on a 1–10 scale, with 10 being the best",
+    "The movie production budget in (nominal) dollars",
+    "The movie’s worldwide gross revenue in (nominal) dollars"
+  )
+)
+
+kable(
+  variable_table,
+  booktabs = FALSE
+) |>
+  kable_styling(full_width = FALSE) |>
+  column_spec(1, border_right = TRUE) |>
+  footnote(
+    general = "Figure 1: Data table factor names and descriptions",
+    general_title = ""
+  )
+
+
+```
+
+```{r}
+# read in the dataset
+movie <- read_xlsx("dataset89.xlsx")
+```
+
+# Data Clean-Up and Table editing
+
+### Checking for N/A values
+
+```{r}
+sum(is.na(movie))
+```
+
+### Initial check of model consistency
+
+```{r}
+summary(movie)
+```
+
+### Transformations and Adding Variables That Could be Helpful for Analysis
+
+I added numeric and categorical variables that I thought would be helpful in aiding my analysis. **director_age**: calculated from the current year minus the birth year. **director_age_group**: With director_age, I made an age group I could group the directors in, in case a director's age group has any impact on the revenue. **production_date** was converted to a **date** type, then **month** and **day** variables were added in order to calculate the **production_season** for each movie. **production_day_number** was added, which counts the number of days that elapsed between the production day and the default R date, January 1, 1970.
+
+The **director_freq** categorical variable groups the directors based on how frequently they appeared in the sample. Directors who appeared more than three times vs directors who appeared three or less times.
+
+Since both budget and gross scaled up to the millions, I took the natural log of both variables, and saved them as **log_budget** and **log_gross**, respectively.
+
+```{r}
+movie <- movie |>
+mutate(
+production_date = as.Date(production_date, format = "%m/%d/%y"),
+director_age = as.numeric(format(Sys.Date(), "%Y")) - birth_year,
+month = as.numeric(format(production_date, "%m")),
+day = as.numeric(format(production_date, "%d")),
+    production_season = case_when(
+      (month == 12 & day >= 21) | (month %in% c(1, 2)) | (month == 3 & day < 20) ~ "Winter",
+      (month == 3  & day >= 20) | (month %in% c(4, 5)) | (month == 6 & day < 21) ~ "Spring",
+      (month == 6  & day >= 21) | (month %in% c(7, 8)) | (month == 9 & day < 23) ~ "Summer",
+      TRUE ~ "Fall"
+    ),
+production_day_number = as.numeric(production_date),
+director_age_group = case_when((director_age >= 40 & director_age < 50) ~ "40s",
+                               (director_age >= 50 & director_age < 60) ~ "50s",
+                               (director_age >= 60 & director_age < 70) ~ "60s",
+                               (director_age >= 70 & director_age < 80) ~ "70s",
+                               (director_age >= 80 & director_age < 90) ~ "80s",
+                               (director_age >= 90 & director_age < 100) ~ "90s",
+                               
+                               ),
+log_gross = log(gross),
+log_budget = log(budget)
+                           
+) 
+
+```
+
+```{r}
+# creating a list of directors who appeared more than 3 times, then a list of directors who appeared 3 or less times 
+
+director_freq <- movie |>
+  count(director_name, name = "count") |> 
+  mutate(mean_count = mean(count),
+         min_count = min(count),
+         max_count = max(count),
+         median_count = median(count),
+         frequency = case_when(
+           (count > 3 ~ "more than three movies"),
+           (count <= 3 ~ "three or less movies")
+         )
+         )
+
+more_than_three_table <- director_freq |>
+  filter(frequency == "more than three movies")
+
+more_than_three_list <- more_than_three_table$director_name
+
+three_or_less_table <- director_freq |>
+  filter(frequency == "three or less movies")
+
+three_or_less_list <- three_or_less_table$director_name
+
+
+# add the frequency of the directors to the main data table
+
+movie <- movie |>
+  mutate(director_freq = case_when(
+    (director_name %in% more_than_three_list  ~ "more than three movies"),
+    (director_name %in% three_or_less_list  ~ "three or less movies"),
+    (TRUE                                ~ NA)
+         ))
+
+
+
+movie
+```
+
+Creating dummy variables for genres with a frequency of more than three. Genres with frequency equal to or less than three will be condensed into an "other" group.
+
+```{r}
+# creating table to specify popular genres vs other genres
+all_genres <- unlist(strsplit(movie$genres, ","))
+genres_table <- data.table(
+  genres = all_genres)
+
+genres_table <- genres_table |>
+  count(genres, name = "count") |>
+  mutate(official_genre_list = ifelse(count < 3, "Other", genres),
+         other = case_when((official_genre_list == "Other") ~ TRUE,
+                           (official_genre_list != "Other") ~ FALSE) )
+```
+
+```{r}
+
+# creating popular genres vs other genres list
+popular_genres_df <- filter(genres_table, official_genre_list != "Other")
+popular_genre_list <- popular_genres_df$genres
+
+other_df <- filter(genres_table, official_genre_list == "Other")
+other_genre_list <- other_df$genres
+```
+
+```{r}
+# creating dummy variables for popular genres
+for (g in popular_genre_list) {
+  movie <- movie |>
+    mutate(!!paste0("D_", g) := as.integer(str_detect(genres, g))
+           )
+}
+
+```
+
+```{r}
+# creating dummy variable for "other"
+
+# initialize D_Other column as 0
+movie <- movie |>
+  mutate(D_Other = 0)
+
+# D_Other will be set to 1 for all rows that include an "other" genre 
+for (g in other_genre_list) {
+  movie <- movie |>
+    mutate(
+      D_Other = as.integer(D_Other | str_detect(genres, g))
+    )
+}
+
+# checking if the dummies were created properly 
+movie |>
+  select(-movie_title, -production_date, -runtime_minutes, -director_name, -birth_year, -movie_averageRating, -budget, -gross, -director_age, -month, -day, -production_season, -production_day_number, -director_age_group, -log_gross, -log_budget)
+
+movie
+```
+
+# Exploratory Data Analysis
+
+## Univariate Distributions
+
+```{r}
+# overall summary: min, mean, median, IQR, max
+summary(movie)
+
+```
+
+### Director Name Distribution
+
+```{r}
+# make a bar graph of the director names and frequencies
+ggplot(data = director_freq, 
+       mapping = aes(x = count, y = director_name)) +
+  geom_col(aes(fill = frequency)) +
+  labs(x = "Count",
+       y = "Director Names",
+       title = "Director Names and Frequencies")
+
+```
+
+### Genres Distribution
+
+```{r}
+ggplot(data = genres_table, 
+       mapping = aes(x = count, y = official_genre_list)) +
+  geom_col(aes(fill = other))  +
+  labs(x = "Count",
+       y = "Genre List",
+       title = "Genres and Their Frequencies")+
+   theme(
+    plot.caption = element_text(hjust = 0)
+  )
+
+```
+
+### Production Season Distribution
+
+```{r}
+ggplot(data = movie, 
+       mapping = aes(x = production_season, fill = "orange")) +
+  geom_bar()  +
+  labs(x = "Season",
+       y = "Frequency",
+       title = "Production Seasons and Their Frequencies"
+       ) +
+  theme(legend.position = "none")
+
+```
+
+### Continuous Variable Distributions and Bivariate Distributions: Scatter-Plot Matrices
+
+```{r}
+ggpairs(
+  movie |> select(
+    runtime_minutes,
+    movie_averageRating,
+    log_budget,
+    log_gross,
+    director_age
+  ),
+  columns = 1:5,
+  aes(alpha = 0.6),
+  upper = list(
+    continuous = wrap(
+      "cor",
+      digits = 2,
+      size = 2.2,
+      mapping = aes()
+    )
+  ),
+  lower = list(
+    continuous = wrap("points", size = 0.9, color = "coral")
+  ),
+  diag = list(
+    continuous = wrap("barDiag", bins = 20, fill = "coral")
+  ),
+  progress = FALSE
+)+ labs(caption = "Figure 2: Scatterplot matrix bivariate and univariate distributions") +
+   theme(
+    plot.caption = element_text(hjust = 0)
+  )
+```
+
+# Model Selection
+
+### Create a table of relevant variables, then run exhaustive test to find best overall MAIN EFFECTS model with comedy as baseline dummy
+
+```{r}
+# exhaustive test to find best MAIN EFFECTS model with comedy as baseline
+results_maineffects <- regsubsets(log_gross ~ runtime_minutes + movie_averageRating + production_day_number + production_season + director_age_group + log_budget + director_freq + D_Action + D_Adventure + D_Biography + D_Crime + D_Drama + D_Family + D_Fantasy + D_Horror + D_Mystery + D_Romance + `D_Sci-Fi` + D_Thriller + D_Other, data = movie, nvmax = 8)
+summary(results_maineffects)
+summary(results_maineffects)$bic
+```
+
+Using BIC as the information criterion, we find that the third model is the best main effects model, with the predictors being movie_averageRating, log_budget, and D_Drama.
+
+### Running exhaustive test including interactions
+
+Narrowing down our predictors to the ones from the main effects model, we will then run an exhaustive search for a sufficient interactions model.
+
+```{r}
+results_interactions <- regsubsets(log_gross ~ movie_averageRating * log_budget * D_Drama, data = movie, nvmax = 8)
+summary(results_interactions)
+summary(results_interactions)$bic
+```
+
+According to the BIC information criterion, the best interactions model is the fourth one, with predictors movie_averageRating + log_budget + D_Drama, and a single interaction, movie_averageRating:log_budget. The second best model is the third model, which is just the main effects model. Our third best is the fifth model, which includes predictors movie_averageRating + log_budget + D_Drama, and two interactions, movie_averageRating:log_budget + log_budget:D_Drama. We will run diagnostics on the top 3 models and compare them using the anova() function.
+
+### Running diagnostics on top 3 models
+
+```{r}
+model1<- lm(log_gross ~ movie_averageRating + log_budget + D_Drama, data = movie)
+
+model2 <- lm(log_gross ~ movie_averageRating + log_budget + D_Drama + movie_averageRating:log_budget, data = movie )
+
+model3<- lm(log_gross ~ movie_averageRating + log_budget + D_Drama + movie_averageRating:log_budget + log_budget:D_Drama, data = movie )
+
+plot(model1)
+plot(model2)
+plot(model3)
+
+```
+
+### Test the remaining two models with F-test
+
+According to the diagnostics, we see that each of the linear assumption has been met. In other words, the predictors exhibit a linear relationship with the response variable.
+
+Additionally, all 3 qqplots have relatively similar layouts, with most of the points except 3 anomalies closely following the 45 degree line. This suggests an approximately normal distribution of the error terms.
+
+The test for nonconstant variance is most violated by model1, the model with only main effects. The standardized residual values appear to be negatively correlated with the fitted values, exhibiting decreasing variance for larger fitted values. However, the slope is flatter for the other two models. The points are more spread out and exhibit less of a pattern, better supporting the assumption of nonconstant variance.
+
+Due to the results of the diagnostics, we will now only compare model2 and model3.
+
+```{r}
+#anova(reduced, full)
+
+anova(model2, model3)
+
+```
+
+Since the p value is high, we fail to reject the null hypothesis that the first model is a more fitting model in predicting log_gross. Thus, we will choose model2 instead of model3.
+
+# Final Model Report
+
+```{r}
+final_model <- model2
+summary(final_model)
+
+par(
+  mfrow = c(3,1),
+  mar = c(4, 4, 3, 1),
+  oma = c(4, 0, 0, 0)
+)
+
+plot(final_model, which = 1:3)
+
+mtext(
+  "Figure 3: Linear model diagnostic plots",
+  side = 1,
+  outer = TRUE,
+  line = 1,
+  adj = 0
+)
+
+```
+
+Our final model is:
+
+$$log\_gross_i =  -42.5426 + 7.0902 MaR_i + 3.3865 log\_budget_i - 0.8252D_{DRAMAi} - 0.3898(MaR_i * log\_budget_i) + e_i, \\ \quad e_i \sim N(0, \sigma^2)$$
+
+**Model Interpretation**:
+
+```{r}
+library(tibble)
+library(gt)
+
+exp(-0.825)
+
+100 * (exp(log(1.01)*3.39) - 1)
+
+3.3865 * 0.01
+
+1 - exp(-0.8252) 
+
+coef_table <- tibble(
+  Coefficient = c("B0 (Intercept)",
+                  "B1: Movie Average Rating",
+                  "B2: ln(budget)",
+                  "B3: Drama",
+                  "B4: Movie Average Rating × ln(budget)"),
+  
+  Estimate = c(-42.54, 7.09, 3.39, -0.83, -0.39),
+  
+  `ln(gross) interpretation` = c(
+    "Expected ln(gross) for a non-Drama film with rating = 0 and budget = $1.",
+    "For non-Drama films, a 1-point increase in rating increases ln(gross) by 7.09, before accounting for budget interaction.",
+    "For non-Drama films at rating = 0, a 1% increase in budget raises ln(gross) by 0.0339.",
+    "Drama films have ln(gross) 0.83 lower than non-Drama films, holding rating and budget constant.",
+    "As budget increases, the positive effect of rating on ln(gross) decreases."
+  ),
+  
+  `Gross revenue interpretation` = c(
+    "No meaningful real-world interpretation; serves as a baseline from which other effects adjust revenue.",
+    "At a given budget, higher ratings substantially increase revenue, but the size of the effect depends on the budget.",
+    "A 1% increase in budget leads to about a 3.4% increase in gross revenue, holding movie rating constant.",
+    "Drama films earn about 56% less gross revenue than non-Drama films on average.",
+    "Big-budget films gain less additional revenue from higher ratings than smaller-budget films."
+  )
+)
+
+coef_table |>
+  gt() |>
+  tab_header(
+    title = "Interpretation of Regression Coefficients",
+    subtitle = "Response Variable: ln(gross)"
+  ) |>
+  fmt_number(
+    columns = Estimate,
+    decimals = 2
+  ) |>
+  cols_align(
+    align = "center",
+    columns = Estimate
+  ) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) |>
+  tab_source_note(
+    source_note = "Figure 4: Regression Coefficients and Interpretations"
+  )
+
+
+```
+
+# Key Question: Is an increased budget justified?
+
+```{r}
+# is the beta AT LEAST one?
+# null: beta = 1
+# alt: beta > 1
+est <- 3.3865
+null <- 1
+se <- 1.0835
+alpha <- 0.05
+test_stat <- (est - null) / se
+pt(test_stat, 98, lower.tail = FALSE)
+
+confint(final_model, level = 0.95)
+```
+
+At significance level 0.05, we have enough evidence to reject our null and claim that the coefficient for log_budget is greater than 1. The same results can also be observed from constructing a 95% confidence interval of the coefficient for log_budget, which ranges between 1.2363446 and 5.53661612, all values greater than 1.
+
+# Prediction
+
+Predict the revenue generated by a new film with the following characteristics: production date: June 15, 2013, run time: 2 hrs, rating: 7.0, genre: comedy, budget: 10 million
+
+```{r}
+log(10000000)
+pred_int<- predict(final_model, newdata = data.frame(
+    movie_averageRating = 7.0,
+    log_budget = 16.1181,
+    D_Drama = 0),
+  interval = "prediction",
+  level = 0.95
+)
+
+exp(pred_int) #applying exp() to our prediction interval, since we did a log transform
+```
