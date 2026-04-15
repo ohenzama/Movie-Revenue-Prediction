@@ -1,6 +1,5 @@
 ---
-title: "Appendix"
-subtitle: "STAT 3301"
+title: "Movie Revenue Prediction Project"
 institute: "The Ohio State University"
 author: "Ohenmaa Sarfo-Bonsu"
 date: "2025-12-16"
